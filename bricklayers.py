@@ -2035,8 +2035,10 @@ Argument names are case-insensitive, so:
 
 
     def gcode_opener(path, flags):
-        file=os.open(path, flags)
-        header=os.pread(file,4,0)
+        file = os.open(path, flags)
+        header = os.read(file, 4)
+        # Set cursor back to the start
+        os.lseek(file, 0, os.SEEK_SET)
         if header==bytes("GCDE","ascii"):
             os.close(file) #do not leak the file descriptor
             print(f"{error_marker}The file '{input_file}' is a binary gcode file, which is not supported. Disable Binary G-code in your slicer settings", file=sys.stderr)
