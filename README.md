@@ -15,7 +15,10 @@ But just like a 0.6mm nozzle, it seems Brick Layers is prone to stringing - time
 
 ---
 
-## Install Python or Pypy
+## Installation
+
+Download `bricklayers.py` file from this repository.
+
 To use the script, you need **Python 3** installed in your machine:
 - [Download Python 3](https://www.python.org/downloads/) CPython, or
 - [Download PyPy 3](https://pypy.org/download.html) PYPY (faster)
@@ -39,13 +42,13 @@ Edit the **"Post processing scripts"** section in your slicer.
 
 ### **Mac/Linux Examples 🍏 🐧**
 - CPython (installed globally):<br>
-```/usr/local/bin/python3 /Volumes/3DPrinting/Scripts/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1;```
+```python3 ~/Downlaods/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1```
 - CPython (installed locally):<br>
-```/Users/YourName/.pyenv/shims/python3 /Volumes/3DPrinting/Scripts/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1;```
+```~/.pyenv/shims/python3 ~/Downlaods/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1```
 - PyPy3 (installed globally):<br>
-```/usr/local/bin/pypy3 /Volumes/3DPrinting/Scripts/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1;```
+```pypy3 ~/Downlaods/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1```
 - PyPy3 (installed locally):<br>
-```/Users/YourName/.pyenv/versions/pypy3/bin/pypy3 /Volumes/3DPrinting/Scripts/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1;```
+```~/.pyenv/versions/pypy3/bin/pypy3 ~/Downlaods/bricklayers.py -startAtLayer 3 -extrusionMultiplier 1.05 -enabled 1```
 
 ### **Wall Generator** and **Walls printing order**:
 In "Quality", "Walls printing order" be sure you select **"Inner/Outer"** - this is very important for the right detection of the Loops 'Depth':
