@@ -66,6 +66,14 @@ You must **disable** `"Supports binary G-code"` in **Printers → General → Fi
 
 The Binary G-code format is **incompatible with post-processing scripts**.
 
+### Increase flow ratio
+
+Increase **flow rate** by ×1.05‒1.1.
+
+BrickLayers works for walls, so do not use 100% infill but more wall lines (it's stronger anyway even without this scirpt).
+
+So to calibrate the flow rate more accurately, you can run the flow rate calibration and increase wall lines a lot. It's not perfect but it's a start.
+
 ---
 
 # How to see the Preview?
