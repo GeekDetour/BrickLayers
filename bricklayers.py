@@ -892,6 +892,17 @@ class LoopNode:
                 if edge_end.y<=point.y:
                     if side>0:
                             winding-=1
+        edge_start = self.looplines[-1].current
+        edge_end = self.looplines[0].previous
+        side = (edge_end.x-edge_start.x)*(point.y-edge_start.y) - (point.x-edge_start.x)*(edge_end.y-edge_start.y)
+        if edge_start.y <= point.y:
+            if edge_end.y>point.y:
+                if side<0:
+                    winding+=1
+        else:
+            if edge_end.y<=point.y:
+                if side>0:
+                    winding-=1
                 
         logger.info(f"winding = {winding}")
         return winding!=0
@@ -1525,9 +1536,9 @@ class BrickLayersProcessor:
                 new_parent=None
                 for kid in cur_parent.kids:
                     
-                    if node.boundingbox.contains(kid.boundingbox) and node.contains_point(kid.looplines[len(kid.looplines)>>2].current):
+                    if node.contains_point(kid.looplines[len(kid.looplines)>>2].current):
                         steal_kids.append(kid)
-                    elif kid.boundingbox.contains(node.boundingbox) and kid.contains_point(node.looplines[len(node.looplines)>>2].current):
+                    elif kid.contains_point(node.looplines[len(node.looplines)>>2].current):
                         new_parent=kid
                 #move all known contained nodes into this node
                 for kid in steal_kids:
@@ -1612,8 +1623,8 @@ class BrickLayersProcessor:
                                 #buffer.append(from_gcode(f"G1 Z{higher_z_formated} F{int(simulator.travel_speed)} ; BRICK: Z-Hop UP\n"))
                                 buffer.extend(self.travel_to(deffered_line.previous, simulator, feature, None, deffered_line.previous, higher_z))
                             buffer.append(from_gcode(f"G1 Z{target_z_formated} F{int(simulator.travel_speed)} ; BRICK: Z-Hop Down\n"))
-
-                            buffer.append(from_gcode(feature.internal_perimeter_type))
+                            #buffer.append(from_gcode(feature.internal_perimeter_type))
+                            buffer.append(from_gcode(";TYPE:Custom\n"))
                             buffer.append(from_gcode(f"{simulator.const_width}{deffered_line.current.width:.2f}\n")) # avoid thin lines from the previous layer
                         ##########
 
