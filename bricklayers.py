@@ -1765,7 +1765,11 @@ class BrickLayersProcessor:
             myline.object = feature.current_object
 
             previous_state=current_state
-            buffer_lines.append(myline)
+            #buffer_lines.append(myline)
+            if not self.yield_objects: #why buffer when we can just return things
+                yield line
+            else:
+                yield myline
         layer_index=0
         layer_buffer=[]
         layer_islands = []
@@ -1830,8 +1834,13 @@ class BrickLayersProcessor:
                     myline.previous=previous_state
                     myline.current=current_state
                     self.generate_deffered_perimeters(myline, [deffered_perimeters], extrusion_multiplier, extrusion_multiplier_preview, feature, simulator, buffer_lines)
-                layer_islands=[]
-                layer_buffer=[]
+                if not self.yield_objects:
+                    yield from (gcodeline.to_gcode() for gcodeline in buffer_lines)
+                else:
+                    yield from buffer_lines
+                buffer_lines.clear()
+                layer_islands.clear()
+                layer_buffer.clear()
                 layer_index=line_number
                 current_layer=feature.layer
                 if line.startswith(";TYPE:Custom"):
@@ -1896,18 +1905,17 @@ class BrickLayersProcessor:
             myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
             myline.object = feature.current_object
 
-            buffer_lines.append(myline)
-
+            #buffer_lines.append(myline)
+            if not self.yield_objects:
+                yield line
+            else:
+                yield myline
 
         if verbosity == 1 or verbosity == 2:
             self.update_progress(bytes_received, "", line_number, feature.layer)
         if verbosity == 3:
             str_feature = f"{feature.current_type:<20}"[:20]
             self.update_progress(bytes_received, f"Feature: {str_feature} GCode:{line}", line_number, feature.layer)
-        if not self.yield_objects:
-            yield from (gcodeline.to_gcode() for gcodeline in buffer_lines)
-        else:
-            yield from buffer_lines
         deffered_perimeters.clear()
         buffer_lines.clear()
 
