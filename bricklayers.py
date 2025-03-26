@@ -1758,8 +1758,7 @@ class BrickLayersProcessor:
             #identify feature changes in current gcode line, also using the simulator on the previous line state:
             feature.parse_gcode_line(line)
 
-            if feature.layer_change:
-                break
+            
 
             myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
             myline.object = feature.current_object
@@ -1770,6 +1769,8 @@ class BrickLayersProcessor:
                 yield line
             else:
                 yield myline
+            if feature.layer_change:
+                break
         layer_index=0
         layer_buffer=[]
         layer_islands = []
@@ -1815,13 +1816,13 @@ class BrickLayersProcessor:
                         buffer_index=island.end
                         buffer_lines.append(from_gcode(feature.internal_perimeter_type))
                         buffer_lines.append(from_gcode(f"{feature.const_layer_height}{feature.height}\n"))
-
+                        last_width=island.start_state.width
                         for loop in island.loops:
                             _,to_move=next(moving_sequence)
                             if to_move:
                                 deffered_perimeters.append(loop)
-                                buffer_lines.append(from_gcode(f"{simulator.const_width}{loop[-1].current.width}\n"))   # For the Preview
                             else:
+                                buffer_lines.append(from_gcode(f"{simulator.const_width}{last_width}\n"))   # For the Preview
                                 kept_line=loop[0]
                                 buffer_lines.append(from_gcode(f"G1 X{kept_line.previous.x} Y{kept_line.previous.y} F{int(simulator.travel_speed)}\n"))
                                 buffer_lines.append(from_gcode(f"G1 F{int(kept_line.previous.f)} ; BRICK: Feed Rate\n")) # Simple Feed
@@ -1829,7 +1830,8 @@ class BrickLayersProcessor:
                                 #     calculated_line=BrickLayersProcessor.new_line_from_multiplier (new_line,extrusion_multiplier)
                                 #     buffer_lines.append(calculated_line)
                                 buffer_lines.extend(loop)
-                        buffer_lines.append(from_gcode(f"G1 X{island.end_state.x} Y{island.end_state.y} F{int(simulator.travel_speed)}"))
+                            last_width=loop[-1].current.width
+                        buffer_lines.append(from_gcode(f"G1 X{island.end_state.x} Y{island.end_state.y} F{int(simulator.travel_speed)}\n"))
                     buffer_lines.extend(layer_buffer[buffer_index:])
                     myline.previous=previous_state
                     myline.current=current_state
@@ -1895,20 +1897,21 @@ class BrickLayersProcessor:
 
             
             bytes_received += len(line.encode("utf-8"))
-            simulator.parse_gcode_line(line)
-            current_state = simulator.get_state()
-            
-            #identify feature changes in current gcode line, also using the simulator on the previous line state:
-            feature.parse_gcode_line(line)
 
-
-            myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
-            myline.object = feature.current_object
 
             #buffer_lines.append(myline)
             if not self.yield_objects:
                 yield line
             else:
+                simulator.parse_gcode_line(line)
+                current_state = simulator.get_state()
+                
+                #identify feature changes in current gcode line, also using the simulator on the previous line state:
+                feature.parse_gcode_line(line)
+
+
+                myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
+                myline.object = feature.current_object
                 yield myline
 
         if verbosity == 1 or verbosity == 2:
