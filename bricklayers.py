@@ -803,7 +803,29 @@ class GCodeSimulator:
         self.detraction_speed = 0
         self.retraction_length = 0
 
+class LoopIsland:
 
+    __slots__ =  ('loops','start','end','start_state','end_state')
+    def __init__(self,start):
+        self.loops=[]
+        self.start=start
+        self.end=start+1
+        self.start_state=None
+        self.end_state=None
+    
+    def set_start(self,start_line,state):
+        self.start=start_line
+        self.start_state=state
+    
+    def set_end(self,end_line,state):
+        self.end=end_line
+        self.end_state=state
+
+    def append(self,loop):
+        self.loops.append(loop)
+
+    def __len__(self):
+        return len(self.loops)
 
 class LoopNode:
     """Temporary structure to track nesting relationships of LOOPS during processing."""
@@ -856,7 +878,35 @@ class LoopNode:
         if self.around_hole:
             return depth + 1
 
-  
+    def contains_point(self,point):
+        winding=0
+        for line in self.looplines:
+            edge_start = line.previous
+            edge_end = line.current
+            side = (edge_end.x-edge_start.x)*(point.y-edge_start.y) - (point.x-edge_start.x)*(edge_end.y-edge_start.y)
+            if edge_start.y <= point.y:
+                if edge_end.y>point.y:
+                    if side<0:
+                        winding+=1
+            else:
+                if edge_end.y<=point.y:
+                    if side>0:
+                            winding-=1
+        edge_start = self.looplines[-1].current
+        edge_end = self.looplines[0].previous
+        side = (edge_end.x-edge_start.x)*(point.y-edge_start.y) - (point.x-edge_start.x)*(edge_end.y-edge_start.y)
+        if edge_start.y <= point.y:
+            if edge_end.y>point.y:
+                if side<0:
+                    winding+=1
+        else:
+            if edge_end.y<=point.y:
+                if side>0:
+                    winding-=1
+                
+        logger.info(f"winding = {winding}")
+        return winding!=0
+
     def __repr__(self):
         keys_to_include = {"gcode"}
         return (f"LoopNode(around_hole={self.around_hole} , order={self.order}, depth={self.depth}, "
@@ -1382,7 +1432,7 @@ class BrickLayersProcessor:
 
 
     @staticmethod
-    def calculate_loop_depth(group_perimeter):
+    def calculate_loop_depth(group_perimeter,dump=False):
         """Determines the hierarchical structure of perimeter loops in a layer.
 
         Identifies:
@@ -1414,43 +1464,15 @@ class BrickLayersProcessor:
             # print(bb)
             nodes.append(LoopNode(loop_index, bb, ploop))
 
-        # Clone the Nodes, with their computed Bounding Boxes, for detection in reverse:
-        nodes_reverse = [LoopNode(n.order, n.boundingbox, n.looplines) for n in nodes]
-        nodes_reverse.reverse()
-
-        # Run the tree-building function in both directions
-        parents_direct  = BrickLayersProcessor.build_loop_tree(nodes)
-        parents_reverse = BrickLayersProcessor.build_loop_tree(nodes_reverse, True)
-
-        #print(brick_dump("parents_direct",  parents_direct))
-        #print(brick_dump("parents_reverse", parents_reverse))
-
-        parents_merged = []
-
-        # Process parents_direct, merging both steps 2 & 3
-        for parent in parents_direct:
-            if parent.kids:  # If has kids: it's a normal loop with nested loops
-                parents_merged.append(parent)
-            else:
-                # Find the matching reverse parent
-                match = next((rev_parent for rev_parent in parents_reverse if rev_parent.order == parent.order), None)
-                
-                if match:
-                    if match.kids:  # Reverse has kids? It's a loop with nested loops around a hole
-                        parents_merged.append(match)
-                    else:  # Fully isolated loop:
-                        parents_merged.append(parent)
+        parents_merged = BrickLayersProcessor.build_loop_tree_bidirectional(nodes)
+        if dump:
+            logger.info(brick_dump("parents_merged",parents_merged))
 
         LoopNode.concentric = 0 # Resetting the contentric counter of loops that are tightly nested
         for parent in parents_merged:
             LoopNode.concentric+=1
             parent.propagate(moving_order, 0)
 
-        #print(brick_dump("parents_merged", parents_merged, {"gcode"}))
-
-        # Clear the Node Trees
-        del parents_direct
-        del parents_reverse
         del parents_merged
 
         return moving_order
@@ -1499,6 +1521,41 @@ class BrickLayersProcessor:
 
         return parents  # Returning this for debugging or later use
 
+    @staticmethod
+    def build_loop_tree_bidirectional(nodes, hole=False):
+        """Builds the parent-child tree structure based on bounding box containment."""
+        # Create a node, to act as the root of the tree
+        root = LoopNode(-1,None,[])
+        for node_index, node in enumerate(nodes):
+            if len(node.looplines)<2:
+                continue
+            cur_parent=root
+            completed=False            
+            while not completed:
+                steal_kids=[]
+                new_parent=None
+                for kid in cur_parent.kids:
+                    
+                    if node.contains_point(kid.looplines[len(kid.looplines)>>2].current):
+                        steal_kids.append(kid)
+                    elif kid.contains_point(node.looplines[len(node.looplines)>>2].current):
+                        new_parent=kid
+                #move all known contained nodes into this node
+                for kid in steal_kids:
+                    cur_parent.kids.remove(kid)
+                    node.kids.append(kid)
+                if new_parent==None:
+                    #cur_parent.around_hole=node.around_hole
+                    cur_parent.kids.append(node)
+                    completed=True
+                else:
+                    cur_parent=new_parent
+                    #we know this only because of input order
+                    #think of better way to work out holes
+                    #node.around_hole=True
+ 
+                    
+        return root.kids
 
 
     def generate_deffered_perimeters(self, myline, deffered, extrusion_multiplier, extrusion_multiplier_preview, feature, simulator, buffer):
@@ -1566,8 +1623,8 @@ class BrickLayersProcessor:
                                 #buffer.append(from_gcode(f"G1 Z{higher_z_formated} F{int(simulator.travel_speed)} ; BRICK: Z-Hop UP\n"))
                                 buffer.extend(self.travel_to(deffered_line.previous, simulator, feature, None, deffered_line.previous, higher_z))
                             buffer.append(from_gcode(f"G1 Z{target_z_formated} F{int(simulator.travel_speed)} ; BRICK: Z-Hop Down\n"))
-
-                            buffer.append(from_gcode(feature.internal_perimeter_type))
+                            #buffer.append(from_gcode(feature.internal_perimeter_type))
+                            buffer.append(from_gcode(";TYPE:Custom\n"))
                             buffer.append(from_gcode(f"{simulator.const_width}{deffered_line.current.width:.2f}\n")) # avoid thin lines from the previous layer
                         ##########
 
@@ -1677,11 +1734,6 @@ class BrickLayersProcessor:
 
         # Buffers:
         buffer_lines = []  # Temporary storage for parsed line objects
-        group_perimeter = [] # In case an External Perimeter is created before in Internal Perimeter (just for debugging snippets out of real context) #TODO: better description...
-        deffered_perimeters = [] # [ [ [loop1, loop2, loop3...] ], [ [loop1, loop2, loop3...] ]... ]   Perimeters -> Loops -> Lines
-        kept_loops          = [] # [loop1, loop2, loop3...]  Loops -> Lines
-        temp_list = [] # used in the process to separate the loops that will move from the loops will stay in the current layer.
-
         # Detections (will be turned false once are done)
         still_in_header = True
         detect_speeds = True
@@ -1690,51 +1742,112 @@ class BrickLayersProcessor:
         knife_activated = False
         layer_changed_during_internal_perimeter = False
 
-        # includes the BrickLayer Header Information to the GCode
-        if self.enable_header:
-            buffer_lines.extend(self.gen_header_lines())
-
         # Process the G-code
         #READING ONE LINE AT A TIME FROM A GENERATOR (the input)
-        for line_number, line in enumerate(gcode_stream, start=1):
-            bytes_received += len(line.encode("utf-8")) 
-
-
-            #
-            #   Settings header:
-            #
+        
+        #loop for header stuff
+        for line_number,line in enumerate(gcode_stream, start=1):
+            bytes_received += len(line.encode("utf-8"))
             if still_in_header:
-                if line.startswith(";TYPE:Custom"):
-                    still_in_header = False
                 if line.startswith("; perimeters extrusion width = "): # TODO: could be interesting to change WIDTH for internal perimeters (using the multiplier)
                     pass
-
             #update the state of the current simulator:
             simulator.parse_gcode_line(line)
             current_state = simulator.get_state()
-
+            
             #identify feature changes in current gcode line, also using the simulator on the previous line state:
             feature.parse_gcode_line(line)
 
-            if feature.current_object is not None:
-                #logger.info(f"Printing Object (cancel object): \"'{feature.current_object.name}'\"\n")
-                pass
+            
 
             myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
             myline.object = feature.current_object
 
-
-            if feature.layer == start_at_layer:
-                extrusion_multiplier = first_layer_multiplier
+            previous_state=current_state
+            #buffer_lines.append(myline)
+            if not self.yield_objects: #why buffer when we can just return things
+                yield line
             else:
-                extrusion_multiplier = extrusion_global_multiplier
+                yield myline
+            if feature.layer_change:
+                break
+        layer_index=0
+        layer_buffer=[]
+        layer_islands = []
+        current_loop=[]
+        current_island=LoopIsland(0)
+        current_layer=0
+        #main loop
+        for line_number,line in enumerate(gcode_stream, start=line_number):
+
+            bytes_received += len(line.encode("utf-8"))
+            #update the state of the current simulator:
+            simulator.parse_gcode_line(line)
+            current_state = simulator.get_state()
+            
+            #identify feature changes in current gcode line, also using the simulator on the previous line state:
+            feature.parse_gcode_line(line)
 
 
-            #logger.info(f"IP: {feature.internal_perimeter}, JL: {feature.justleft_internal_perimeter} - Line: {line_number}, gcode:{line}")
+            myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
+            myline.object = feature.current_object
 
+            if feature.layer_change or line.startswith(";TYPE:Custom"):
+                if current_layer < start_at_layer:
+                    buffer_lines.extend(layer_buffer)
+                elif len(layer_islands)>0:
+                    loops=[]
+                    
+                    for island in layer_islands:
+                        loops.extend(island.loops)
+                    #for ii in range(i,len(buffer_lines)):
+                    #    buffer_lines.append(buffer_lines[ii])
+                    logger.info(f"layer:{feature.layer-1}")
+                    ### Loop Depth detection (including loops that are orphaned - and surrounding holes)
+                    moving_sequence = enumerate(BrickLayersProcessor.calculate_loop_depth(loops,True))
+                    buffer_index = 0
+                    deffered_perimeters=[]
+                    if feature.layer == start_at_layer:
+                        extrusion_multiplier = first_layer_multiplier
+                    else:
+                        extrusion_multiplier = extrusion_global_multiplier
+                    for island in layer_islands:
+                        buffer_lines.extend(layer_buffer[buffer_index:island.start])
+                        buffer_index=island.end
+                        buffer_lines.append(from_gcode(feature.internal_perimeter_type))
+                        buffer_lines.append(from_gcode(f"{feature.const_layer_height}{feature.height}\n"))
+                        last_width=island.start_state.width
+                        for loop in island.loops:
+                            _,to_move=next(moving_sequence)
+                            if to_move:
+                                deffered_perimeters.append(loop)
+                            else:
+                                buffer_lines.append(from_gcode(f"{simulator.const_width}{last_width}\n"))   # For the Preview
+                                kept_line=loop[0]
+                                buffer_lines.append(from_gcode(f"G1 X{kept_line.previous.x} Y{kept_line.previous.y} F{int(simulator.travel_speed)}\n"))
+                                buffer_lines.append(from_gcode(f"G1 F{int(kept_line.previous.f)} ; BRICK: Feed Rate\n")) # Simple Feed
+                                # for new_line in loop:
+                                #     calculated_line=BrickLayersProcessor.new_line_from_multiplier (new_line,extrusion_multiplier)
+                                #     buffer_lines.append(calculated_line)
+                                buffer_lines.extend(loop)
+                            last_width=loop[-1].current.width
+                        buffer_lines.append(from_gcode(f"G1 X{island.end_state.x} Y{island.end_state.y} F{int(simulator.travel_speed)}\n"))
+                    buffer_lines.extend(layer_buffer[buffer_index:])
+                    myline.previous=previous_state
+                    myline.current=current_state
+                    self.generate_deffered_perimeters(myline, [deffered_perimeters], extrusion_multiplier, extrusion_multiplier_preview, feature, simulator, buffer_lines)
+                if not self.yield_objects:
+                    yield from (gcodeline.to_gcode() for gcodeline in buffer_lines)
+                else:
+                    yield from buffer_lines
+                buffer_lines.clear()
+                layer_islands.clear()
+                layer_buffer.clear()
+                layer_index=line_number
+                current_layer=feature.layer
+                if line.startswith(";TYPE:Custom"):
+                    break
 
-
-            # Detecting Speeds from the file:
             if detect_speeds == True: # it must begin as True - there is no default speeds (override down). It changes to False once speeds are detected
                 if simulator.retraction_speed == 0 and feature.wiping :
                     simulator.retraction_speed = simulator.f
@@ -1749,307 +1862,65 @@ class BrickLayersProcessor:
                     #simulator.detraction_speed = 1800.0 #mm/sec
                     logger.debug(f"\n\n travel_speed: {simulator.travel_speed}\n wipe_speed: {simulator.wipe_speed}\n retraction_speed: {simulator.retraction_speed}\n detraction_speed: {simulator.detraction_speed}\n retraction_length: {simulator.retraction_length}\n\n")
 
-
-            if layer_changed_during_internal_perimeter and simulator.is_extruding and simulator.is_moving:
-                # Hacking the weird situation where an internal perimeter began before a layer change 
-                # and just continues after that, without any indication of ;TYPE:inner_wall
-                # Not ideal for the Loop Order, but keeps things working
-                # Might be related to this OrcaSlicer bug: 
-                # https://github.com/SoftFever/OrcaSlicer/issues/884
-                feature.internal_perimeter = True
-                layer_changed_during_internal_perimeter = False #Resets
-
-
-            # Logging each line in case of extreme debugging:
-            #logger.info(f"Line: {line_number}, gcode:{line}")
-
-
-            #
-            #   Captures all the GCode lines for an "Internal Perimeter"
-            #   storing every line on a data structure tha allows reordering
-            #
             if feature.internal_perimeter:
-                # Internal Perimeter is about to start!
-                # Needs to group the lines in Loops
-                    
 
-                if feature.layer >= start_at_layer and feature.layer not in layers_to_ignore: # Allows the processor to ignore certain layers
-                    # If it got inside, this Inner Perimeter should be Brick-Layer Processed!
+                if not knife_activated and (feature.wiping or simulator.retracted < 0 or simulator.just_stopped_extruding):
+                    knife_activated = True
+                elif knife_activated and simulator.is_extruding and simulator.is_moving:
+                    knife_activated = False
+                elif knife_activated and not feature.wiping and myline.gcode.startswith("G1 F"):
+                    knife_activated = False
+
+                if feature.justgotinside_internal_perimeter:
+                    current_island.set_start(line_number-layer_index,current_state)
+                elif knife_activated:
+                    if len(current_loop)>0:
+                        current_island.append(current_loop)
+                        current_loop=[]
+                elif not knife_activated:
                     myline.previous = previous_state    # attach the previous simulated state to the line
                     myline.current = current_state      # attach the current  simulated state to the line
                     myline.object = feature.current_object # Reference to the Currently Printing Object, for the "Cancel Object" feature
-
-                    #logger.info(f"retracted:{simulator.retracted} is_extruding:{simulator.is_extruding} is_moving:{simulator.is_moving} just_stopped_extruding:{simulator.just_stopped_extruding} is_retracting:{simulator.is_retracting} - {myline.gcode.strip()}")
-
-                    ### Centauri Carbon, FLSUN, BambuLab... have special commands that must be preserved before ;TYPE: External perimeter
-                    if myline.gcode.startswith(("SET_VELOCITY_LIMIT ", "M204 ")):
-                        special_accel_command = myline # saves for later
-                        continue  # skips this line
-
-
-                    if not knife_activated and (feature.wiping or simulator.retracted < 0 or simulator.just_stopped_extruding):
-                        knife_activated = True
-                    elif knife_activated and simulator.is_extruding and simulator.is_moving:
-                        knife_activated = False
-                    elif knife_activated and not feature.wiping and myline.gcode.startswith("G1 F"):
-                        knife_activated = False
-
-                    if  feature.justgotinside_internal_perimeter: # This should only execute once, when it reached ";Inner Wall" or ";Perimeter"
-                        # Append the start of a perimeter to the buffer:
-                        #buffer_lines.append(myline) # EDGE CASE: not appending, in case there is nothing to be kept...
-
-                        # Starting a new perimeter group:
-                        group_loop = [] # Whis will be a group of lines that makes a closed Loop.
-                        group_perimeter = []
-                        group_perimeter.append(group_loop) # the group_loop starts empty
-                        deffered_perimeters.append(group_perimeter) # This will collect ALL the groups of perimeters in the current layer.
-                    
-                    elif knife_activated:
-                        if len(group_loop) > 0:
-                            group_loop = []
-                            group_perimeter.append(group_loop)
-                    elif not knife_activated:
-                        group_loop.append(myline)
-
-
-                else: # When it layers to be ignored:
-                    # This Perimiter is part of a Layer that should NOT be modified. Just append:
-                    if myline is not None:
-                        buffer_lines.append(myline)
-
-
-
-            # OrcaSlicer Layer-Change while not 'nesting' Internal Perimeters problem
-            if feature.layer_change and feature.current_type=="internal_perimeter" and len(deffered_perimeters) > 0:
-                layer_changed_during_internal_perimeter = True
-
-
-
-            #
-            # Processing Last Buffered Perimeter:
-            #
-            if feature.justleft_internal_perimeter or (layer_changed_during_internal_perimeter):
-                #
-                #   When it finishes receiving "Internal Perimeter" Gcode,
-                #   it will then process the loops data structure
-                #   On a 5 perimeter print: 
-                #       Out, 4, 3, 2, 1, Infill   will become:
-                #       Out,    3,    1, Infill   -- at the original height
-                #            4,    2,             -- half layer higher.
-                #
-                #   On a 4 perimeter print:
-                #       Out, 3, 2, 1, Infill   will become:
-                #       Out,    2,    Infill   -- at the original height
-                #            3,    1,          -- half layer higher.
-                # 
-
-                knife_activated = False
-                myline.previous = previous_state
-                myline.current  = current_state
-
-                # if logger.isEnabledFor(logging.DEBUG):
-                #     logger.debug(f"deffered_perimeters: len({len(group_perimeter)})" )
-
-                # Pop-out empty loop groups from the list
-                while group_perimeter and len(group_perimeter[-1]) == 0: # TODO: revise if it still occurs (it was rare)
-                    group_perimeter.pop() 
-
-                if len(group_perimeter) > 0:
-
-                    ## VERY HELPFUL DEBUG LINE: Shows the lines grouped in LOOPS:
-                    # if logger.isEnabledFor(logging.INFO):
-                    #     #logger.debug(f"group_perimeter: {len(group_perimeter)}" )
-                    #     logger.info(brick_dump("group_perimeter", group_perimeter, {"gcode"}))
-                    #     pass
-     
-                    ### Loop Depth detection (including loops that are orphaned - and surrounding holes)
-                    moving_sequence = BrickLayersProcessor.calculate_loop_depth(group_perimeter)
-    
-                    if not self.justcalculate:
-                        for pos, to_move in enumerate(moving_sequence):
-                            if to_move:
-                                temp_list.append(group_perimeter[pos])
-                            else:
-                                kept_loops.append(group_perimeter[pos])
-
-                        group_perimeter[:] = temp_list # puts back the loops that will be moved up
-                        temp_list.clear()
-                    else :
-                        kept_loops[:] = group_perimeter
-
-                    # Reinsert the Loops that should remain at the normal height, but with an applied extrusion multiplier:
-                    if len(kept_loops) > 0:
-
-                        concentric_group = 0
-                        previous_concentric_group = 0
-                        previous_loop = None
-                        
-                        for loop_index, kept_loop in enumerate(kept_loops):
-                            is_first_loop = (loop_index == 0)
-
-                            for line_index, kept_line in enumerate(kept_loop):
-                                is_first_line = (line_index == 0)
-
-                                concentric_group = kept_line.concentric_group
-
-                                if is_first_loop and is_first_line:
-                                    xy_line_to_adjust = self.last_noninternalperimeter_xy_line
-                                    if xy_line_to_adjust is not None and not xy_line_to_adjust.current.is_extruding:
-                                        # This was breaking in some cases
-                                        #xy_line_to_adjust.gcode = f"G1 X{kept_line.previous.x} Y{kept_line.previous.y} F{int(simulator.travel_speed)} ; BRICK: Travel Fix Level\n"
-                                        xy_line_to_adjust.update_xy(kept_line.previous.x, kept_line.previous.y) # BRICK Travel Fix
-                                        self.last_noninternalperimeter_xy_line = None
-                                        #buffer_lines.append(from_gcode(f"G1 Z{feature.z} F{int(simulator.travel_speed)} ; BRICK: Z-Hop Down\n"))
-                                    buffer_lines.append(from_gcode(feature.internal_perimeter_type))
-                                    buffer_lines.append(from_gcode(f"{feature.const_layer_height}{feature.height}\n"))
-
-                                if is_first_loop and is_first_line and not kept_line.current.relative_extrusion:
-                                    # If the gcode was using absolute extrusion, insert an M83 for Relative Extrusion
-                                    buffer_lines.append(from_gcode("M83 ; BRICK: Change to Relative Extrusion\n"))
-
-
-                                if is_first_line:
-                                    # Creates a Movement to reposition the head in the correct initial position:
-                                    if previous_loop is not None:
-                                        buffer_lines.extend(self.travel_to(kept_line.previous, simulator, feature, previous_loop, None, feature.z))
-                                        #buffer_lines.extend(self.travel_to(kept_line.previous, simulator, feature, None, kept_line.previous, feature.z))
-                                        pass
-                                    else:
-                                        #buffer_lines.append(from_gcode(f"G1 X{kept_line.previous.x} Y{kept_line.previous.y} F{int(simulator.travel_speed)} ; BRICK: Travel\n")) # Simple Move
-                                        #buffer_lines.append(from_gcode(f"G1 F{int(kept_line.previous.f)} ; BRICK: Feed Rate\n")) # Simple Feed
-                                        buffer_lines.extend(self.travel_to(kept_line.previous, simulator, feature, None, kept_line.previous, feature.z))
-                                    # Enforce the Original Feed Rate of the Loop:
-                                    buffer_lines.append(from_gcode(f"G1 F{int(kept_line.previous.f)} ; BRICK: Feed Rate\n"))
-
-
-                                
-                                # Here the actual internal perimeter line is added, with a calculated multiplier:
-                                calculated_line = BrickLayersProcessor.new_line_from_multiplier(kept_line, extrusion_multiplier)
-                                buffer_lines.append(calculated_line)
-
-
-
-                            previous_loop = kept_loop
-                        
-                            previous_concentric_group = concentric_group  # allows to identify when should RETRACT to another non-concentric region of the perimeter 
-
-                        if not kept_line.current.relative_extrusion:
-                            # If the gcode was using absolute extrusion, insert an M82 to return to Absolute Extrusion
-                            buffer_lines.append(from_gcode("M82 ; BRICK: Return to Absolute Extrusion\n"))
-                            # Resets the correct absolute extrusion register for the next feature:
-                            buffer_lines.append(from_gcode(f"G92 E{myline.previous.e} ; BRICK: Resets the Extruder absolute position\n"))
-                        self.last_internalperimeter_state = calculated_line.current
-                        #if  myline.previous.width != kept_line.current.width:
-                        buffer_lines.append(from_gcode(f"{simulator.const_width}{myline.previous.width}\n"))   # For the Preview
-                        buffer_lines.append(from_gcode(f"{feature.const_layer_height}{feature.height:.2f}\n")) # For the Preview
-
-
-
-
-                        # Clear the structure for deffered perimeters, ready for the next Perimeter:
-                        kept_loops.clear() # Just to be sure, clear at the end
-
-                if feature.layer >= start_at_layer and feature.layer not in layers_to_ignore:
-                    # Generates a movement to where the next feature should begin, based on the state calculated from simulating the state:
-                    # TODO: Perform the motion with a Retraction or even better: a Wipe
-                    buffer_lines.append(from_gcode(f"G1 X{myline.previous.x} Y{myline.previous.y} F{int(simulator.travel_speed)} ; BRICK: Calculated to next coordinate\n"))
-                    buffer_lines.append(from_gcode(f"G1 F{int(myline.previous.f)} ; BRICK: Feed Rate\n")) # Simple Feed
+                    current_loop.append(myline)
+            elif feature.justleft_internal_perimeter:
+                if len(current_island)>0:
+                    current_island.set_end(line_number-layer_index-1,previous_state)
+                    layer_islands.append(current_island)
+                    current_island=LoopIsland(0)
+                knife_activated=False
             
-                if special_accel_command:
-                    # Centauri Carbon, FLSUN, BambuLab... have special commands that must be preserved before ;TYPE: External perimeter
-                    buffer_lines.append(special_accel_command)
-                    special_accel_command = None
+
+            previous_state=current_state
+            layer_buffer.append(myline)
+        #loop for remainder of file
+        for line_number,line in enumerate(gcode_stream, start=line_number):
+
+            
+            bytes_received += len(line.encode("utf-8"))
 
 
-            #
-            #   When it reaches a "Layer Change" Gcode:
-            #   (or the "Custom" close to the end of the file, after evething was alrady 'printed')
-            #
-            if feature.layer_change or (feature.current_type == "Custom" and feature.just_changed_type and current_state.z > 0):
-                # A Layers is about to finish! (or it will be the end of the print: 'Custom', with a z greater than zero)
-                myline.previous = previous_state
-                myline.current = current_state
+            #buffer_lines.append(myline)
+            if not self.yield_objects:
+                yield line
+            else:
+                simulator.parse_gcode_line(line)
+                current_state = simulator.get_state()
+                
+                #identify feature changes in current gcode line, also using the simulator on the previous line state:
+                feature.parse_gcode_line(line)
 
-                # Makes the very last layer 'flatter' (no brick) in a very hacked way!!!!
-                if (feature.current_type == "Custom" and current_state.z > 0):
-                    feature.z = feature.z - feature.height/2
-                    extrusion_multiplier = extrusion_multiplier / 2
 
-                if not self.justcalculate:
-                    self.generate_deffered_perimeters(myline, deffered_perimeters, extrusion_multiplier, extrusion_multiplier_preview, feature, simulator, buffer_lines)
-
-                if feature.current_type == "external_perimeter":
-                    # EDGE Case of the external perimeter continuing from the previous layer...
-                    # since we just created an internal_perimeter artificiall, needs to restore the preview for an external perimeter again:
-                    buffer_lines.append(from_gcode(feature.external_perimeter_type))
-                    # TODO: needs more studying...
-                    pass
-
-                # For Verbosity 1 and 2 we update the progress when layers change
-                if verbosity == 1 or verbosity == 2:
-                    self.update_progress(bytes_received, "", line_number, feature.layer)
-
-                # Write all the buffered lines to the file: #OLD WAY
-                #outfile.writelines([gcodeline.to_gcode() for gcodeline in buffer_lines]) #OLD WAY
-                # Generator way:
-                if not self.yield_objects:
-                    yield from (gcodeline.to_gcode() for gcodeline in buffer_lines if gcodeline is not None)
-                else:
-                    yield from (buffer_line for buffer_line in buffer_lines if buffer_line is not None)
-                buffer_lines.clear()
-
-                # Clear the structure for deffered perimeters, ready for the next Layer:
-                deffered_perimeters.clear()
-                buffer_lines.clear()
-
-            #
-            #   All the lines will go through here (except the Internal Perimeter ones)
-            #   Being appended to the buffer one by one
-            #   (layer changes write the buffer to the output file)
-            #
-            if not feature.internal_perimeter:
-                # Adds all the normal lines to the buffer:
-                if myline is not None:
-                    buffer_lines.append(myline)
-
-                self.last_noninternalperimeter_state = current_state
-                if simulator.moved_in_xy:
-                    myline.current = current_state
-                    self.last_noninternalperimeter_xy_line = myline
-
-            # Fixes a nasty non-related preview glitch on OrcaSlicer and BambuStudio Preview
-            # Doesn't change anything on actual printing. Just making the preview pretty.
-            if feature.current_type in ["Internal Bridge", "Ironing", "Bridge", "Sparse infill"] and line.startswith(feature.DEF_LAYER_HEIGHTS):
-                myline.gcode = f"{feature.const_layer_height}{feature.height}\n"
-            if feature.just_changed_type and feature.current_type in ["Internal Bridge", "Ironing", "Bridge", "Sparse infill"]:
-                buffer_lines.append(from_gcode(f"{feature.const_layer_height}{feature.height}\n"))
-
-            # Exception for pretty visualization on PrusaSlicer and OrcaSlicer preview:
-            # Forces a "Width" after an External Perimeter begins, to make them look like they actually ARE.
-            if feature.justgotinside_external_perimeter: # SURE: WITHOUT this width, the preview gets very ugly from continuing with wrong widths
-                if simulator.const_width is not None:
-                    buffer_lines.append(from_gcode(f"{simulator.const_width}{current_state.width}\n"))
-
-            # After every line simulation, keeps a copy as "previous" state:
-            previous_state = current_state
-
+                myline = from_gcode(line) # Data Structure containing the GCODE ("content") of the current line
+                myline.object = feature.current_object
+                yield myline
 
         if verbosity == 1 or verbosity == 2:
             self.update_progress(bytes_received, "", line_number, feature.layer)
         if verbosity == 3:
             str_feature = f"{feature.current_type:<20}"[:20]
             self.update_progress(bytes_received, f"Feature: {str_feature} GCode:{line}", line_number, feature.layer)
-        if not self.yield_objects:
-            yield from (gcodeline.to_gcode() for gcodeline in buffer_lines)
-        else:
-            yield from buffer_lines
-        kept_loops.clear()
-        group_perimeter.clear()
         deffered_perimeters.clear()
         buffer_lines.clear()
-
-        #logger.debug("Finished.")
-
 
 # I might ditch this to using Python's Logger for errors on a separate file...
 def error_log(message, details):
